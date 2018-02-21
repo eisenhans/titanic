@@ -8,15 +8,18 @@ import keras
 from keras.models import Sequential
 from keras.layers import Dense, Dropout, Activation
 from keras.callbacks import ModelCheckpoint
-
+import keras.optimizers
+from sklearn.utils import shuffle
 
 pd.set_option('display.expand_frame_repr', False)
 pd.set_option('display.max_columns', 0)
 
-main_df = pd.read_csv('data/train.csv')
+train_df = pd.read_csv('data/train.csv')
+train_df = shuffle(train_df)
 test_df = pd.read_csv('data/test.csv')
+test_df = shuffle(test_df)
 
-def create_plot(subset=main_df, x='Age', y='Fare'):
+def create_plot(subset=train_df, x='Age', y='Fare'):
     markers = {0: 'x', 1: 'o'}
     colors = {'female': 'red', 'male': 'blue'}
     labels = {(0, 'female'): 'female deceased', (1, 'female'): 'female survived',
@@ -30,11 +33,11 @@ def create_plot(subset=main_df, x='Age', y='Fare'):
         group.plot(ax=ax, x=x, y=y, kind='scatter', marker=markers[key[0]], color=colors[key[1]], label=labels[key])
 
 
-# babies = df.query('Age < 10.0')
+# babies = train_df.query('Age < 20.0')
 # create_plot(babies)
 # plt.show()
 
-def show_survival_rate(subset=main_df, desc=''):
+def show_survival_rate(subset=train_df, desc=''):
     survived = len(subset[subset['Survived'] == 1])
     total = len(subset)
     print('{}: survival rate {:.1f}% ({}/{})'.format(desc, survived/total*100, survived, total))
@@ -55,81 +58,64 @@ def starts_with_letter(x):
 #     show_survival_rate(group, key)
 
 def prepare_data(df):
-    df['Age_lt2'] = np.where(df['Age'] < 2, 1, 0)
-    df['Age_lt5'] = np.where((df['Age'] >= 2) & (df['Age'] < 5), 1, 0)
-    df['Age_lt10'] = np.where((df['Age'] >= 5) & (df['Age'] < 10), 1, 0)
-    df['Age_lt20'] = np.where((df['Age'] >= 10) & (df['Age'] < 20), 1, 0)
-    df['Age_lt40'] = np.where((df['Age'] >= 20) & (df['Age'] < 40), 1, 0)
-    df['Age_lt60'] = np.where((df['Age'] >= 40) & (df['Age'] < 60), 1, 0)
-    df['Age_lt100'] = np.where(df['Age'] >= 60, 1, 0)
+    df['Age'] = np.where((np.isnan(df['Age'])) & (df['Name'].str.contains('Miss')), 8, df['Age'])
+    df['Age'] = np.where((np.isnan(df['Age'])) & (df['Name'].str.contains('Master')), 8, df['Age'])
+    df['Age'] = np.where(np.isnan(df['Age']), 30, df['Age'])
 
-    # replace cabin with first char
-    df['Cabin'] = df['Cabin'].apply(first_char)
+    # standardize age
+    # max_age = df.Age.max()
+    # df.Age = df.Age / max_age
 
     df['male'] = np.where(df['Sex'] == 'male', 1, 0)
-    cabin_dummies = pd.get_dummies(df['Cabin'], prefix='Cabin', drop_first=False)
-    df = pd.concat([df, cabin_dummies], axis=1)
 
-    embarked_dummies = pd.get_dummies(df['Embarked'], prefix='Embarked', drop_first=False)
+    embarked_dummies = pd.get_dummies(df['Embarked'], prefix='Embarked', drop_first=True)
     df = pd.concat([df, embarked_dummies], axis=1)
 
     # standardize fare
     max_fare = df.Fare.max()
     df.Fare = df.Fare / max_fare
 
-    df = df.drop(['PassengerId', 'Name', 'Age', 'Sex', 'Ticket', 'Cabin', 'Embarked'], axis=1)
+    df = df.drop(['PassengerId', 'Name', 'Sex', 'Ticket', 'Cabin', 'Embarked', 'Pclass'], axis=1)
     return df
 
 
-main_df = prepare_data(main_df)
-print(main_df.head(20))
+train_df = prepare_data(train_df)
+print(train_df.head(20))
 # create_plot()
 # plt.show()
 
-# split data in training/validation set (random)
-# TODO: better use cross-validation
-# temp_df, test_local_df = train_test_split(main_df, test_size=0.2)
-# train_df, val_df = train_test_split(temp_df, test_size=0.25)
-# print('train/validate/test/total data: {}/{}/{}/{}'.format(len(train_df), len(val_df), len(test_df), len(main_df)))
-
 target_col = 'Survived'
-x = main_df.drop(target_col, axis=1).values
-y = main_df[target_col].values
-# x_train = train_df.drop(target_col, axis=1).values
-# y_train = train_df[target_col].values
+x_train = train_df.drop(target_col, axis=1).values
+y_train = train_df[target_col].values
 
-# x_val = val_df.drop(target_col, axis=1).values
-# y_val = val_df[target_col].values
-# x_local_test = test_local_df.drop(target_col, axis=1).values
-# y_local_test = test_local_df[target_col].values
 
 # define neural network
 def create_model(input_dim):
     model = Sequential()
-    model.add(Dense(64, activation='relu', input_dim=input_dim))
+    model.add(Dense(256, activation='relu', input_dim=input_dim))
     model.add(Dropout(0.5))
-    model.add(Dense(64, activation='relu'))
+    model.add(Dense(256, activation='relu'))
     model.add(Dropout(0.5))
-    # model.add(Dense(128, activation='relu'))
-    # model.add(Dropout(0.5))
     model.add(Dense(1, activation='sigmoid'))
     # model.summary()
 
-    model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
+    optimizer = keras.optimizers.Adam(lr=0.001)
+    model.compile(loss='binary_crossentropy', optimizer=optimizer, metrics=['accuracy'])
 
     return model
 
 
-def train_model(model, x_train, y_train, validation_split=None):
-    if validation_split:
+def train_model(model, x_train, y_train, validation_split=None, validation_data=None):
+    if validation_split or validation_data:
         weights_file = 'output/weights_best_model.hdf5'
-        callbacks = [ModelCheckpoint(filepath=weights_file, verbose=1, save_best_only=True)]
+        callbacks = [ModelCheckpoint(filepath=weights_file, verbose=0, save_best_only=True)]
     else:
         callbacks = None
 
-    hist = model.fit(x_train, y_train, batch_size=32, epochs=40, callbacks=callbacks,
-                     validation_split=validation_split, verbose=0)
+    hist = model.fit(x_train, y_train, batch_size=32, epochs=100, callbacks=callbacks,
+                     validation_split=validation_split, validation_data=validation_data, verbose=0)
 
+    return hist
     # if validation_split:
     #     model.load_weights(weights_file)
 
@@ -144,35 +130,70 @@ def predict(model, x_test):
     return (prediction >= 0.5).astype(int)
 
 
-# seed = 7
-kfold = StratifiedKFold(n_splits=5, shuffle=True, random_state=None)
-scores = []
+def run_cross_validation(x, y):
+    # seed = 7
+    kfold = StratifiedKFold(n_splits=5, shuffle=True, random_state=None)
+    scores = []
 
-for train, val in kfold.split(x, y):
-    model = create_model(x.shape[1])
-    train_model(model, x[train], y[train])
-    score = evaluate_model(model, x[val], y[val])
-    print('score: {}'.format(score[1]))
-    scores.append(score[1])
+    for train, val in kfold.split(x, y):
+        model = create_model(x.shape[1])
+        train_model(model, x[train], y[train], validation_data=(x[val], y[val]))
+        score = evaluate_model(model, x[val], y[val])
+        print('score: {}'.format(score[1]))
+        scores.append(score[1])
 
-
-print('score avg: {}, score stdv: {}'.format(np.mean(scores), np.std(scores)))
-
-final_model = create_model(x.shape[1])
-train_model(final_model, x, y, validation_split=0.33)
-final_model.load_weights('output/weights_best_model.hdf5')
-
-test_passenger_ids = test_df.PassengerId.values
-test_passenger_ids.shape = (test_passenger_ids.shape[0], 1)
-test_df = prepare_data(test_df)
-if 'Cabin_T' not in test_df:
-    test_df['Cabin_T'] = 0
-x_test = test_df.values
-
-prediction = predict(final_model, x_test)
-result = np.concatenate((test_passenger_ids, prediction), axis=1)
-np.savetxt("output/result.csv", result, delimiter=",", fmt='%1i', header='PassengerId,Survived', comments='')
+    print('score avg: {}, score stdv: {}'.format(np.mean(scores), np.std(scores)))
 
 
+def create_result(x_train, y_train, df):
+    final_model = create_model(x_train.shape[1])
+    train_model(final_model, x_train, y_train, validation_split=0.2)
+    final_model.load_weights('output/weights_best_model.hdf5')
 
-# TODO: visualize: what whas right/wrong?
+    test_passenger_ids = df.PassengerId.values
+    test_passenger_ids.shape = (test_passenger_ids.shape[0], 1)
+    df = prepare_data(df)
+    # if 'Cabin_T' not in test_df:
+    #     test_df['Cabin_T'] = 0
+    x_test = df.values
+
+    prediction = predict(final_model, x_test)
+    result = np.concatenate((test_passenger_ids, prediction), axis=1)
+    np.savetxt("output/result.csv", result, delimiter=",", fmt='%1i', header='PassengerId,Survived', comments='')
+    return final_model
+
+
+def visualize_model(model, history):
+    plt.figure(1)
+    h = history.history
+    print('acc: {}, val acc: {}, loss: {}, val loss: {}'.format(h['acc'][-1], h['val_acc'][-1], h['loss'][-1], h['val_loss'][-1]))
+    # summarize history for accuracy
+    plt.subplot(221)
+    plt.plot(history.history['acc'])
+    plt.plot(history.history['val_acc'])
+    plt.title('Accuracy')
+    plt.ylabel('Accuracy')
+    plt.xlabel('Epoch')
+    plt.legend(['train', 'val'], loc='upper left')
+    # plt.show()
+    # summarize history for loss
+    plt.subplot(222)
+    plt.plot(history.history['loss'])
+    plt.plot(history.history['val_loss'])
+    plt.title('Loss')
+    plt.ylabel('Loss')
+    plt.xlabel('Epoch')
+    plt.legend(['train', 'val'], loc='upper right')
+    plt.show()
+
+
+# run_cross_validation(x_train, y_train)
+
+model = create_result(x_train, y_train, test_df)
+
+model = create_model(x_train.shape[1])
+hist = train_model(model, x_train, y_train, validation_split=0.2)
+visualize_model(model, hist)
+
+
+
